@@ -33,7 +33,7 @@ public class NamedPipeChannel : CallInvoker
     {
     }
 
-    internal NamedPipeChannel(string serverName, string pipeName, NamedPipeChannelOptions options, Action<string> log)
+    public NamedPipeChannel(string serverName, string pipeName, NamedPipeChannelOptions options, Action<string> log)
     {
         _serverName = serverName;
         _pipeName = pipeName;

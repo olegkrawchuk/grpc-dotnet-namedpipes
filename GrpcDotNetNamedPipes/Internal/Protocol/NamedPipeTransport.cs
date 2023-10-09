@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2020 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -91,64 +91,104 @@ internal class NamedPipeTransport
         return BitConverter.ToInt32(_messageBuffer, 0);
     }
 
+    private void HandleRequestInitMessage(TransportMessageHandler messageHandler, TransportMessage message)
+    {
+        _logger.ConnectionId = message.RequestInit.ConnectionId;
+        _logger.Log($"Received <RequestInit> for '{message.RequestInit.MethodFullName}'");
+        messageHandler.HandleRequestInit(message.RequestInit.MethodFullName,
+            message.RequestInit.Deadline?.ToDateTime());
+    }
+
+    private void HandleHeadersMessage(TransportMessageHandler messageHandler, TransportMessage message)
+    {
+        _logger.Log("Received <Headers>");
+        var headerMetadata = ConstructMetadata(message.Headers.Metadata);
+        messageHandler.HandleHeaders(headerMetadata);
+    }
+
+    private void HandlePayloadInfoMessage(TransportMessageHandler messageHandler, TransportMessage message, MemoryStream packet)
+    {
+        _logger.Log($"Received <PayloadInfo> with {message.PayloadInfo.Size} bytes");
+        var payload = new byte[message.PayloadInfo.Size];
+        if (message.PayloadInfo.InSamePacket)
+        {
+            packet.Read(payload, 0, payload.Length);
+        }
+        else
+        {
+            _pipeStream.Read(payload, 0, payload.Length);
+        }
+
+        messageHandler.HandlePayload(payload);
+    }
+
+    private void HandleRequestControlMessage(TransportMessageHandler messageHandler, TransportMessage message)
+    {
+        switch (message.RequestControl)
+        {
+            case RequestControl.Cancel:
+                _logger.Log("Received <Cancel>");
+                messageHandler.HandleCancel();
+                break;
+            case RequestControl.StreamEnd:
+                _logger.Log("Received <StreamEnd>");
+                messageHandler.HandleStreamEnd();
+                break;
+        }
+    }
+
+    private void HandleTrailersMessage(TransportMessageHandler messageHandler, TransportMessage message)
+    {
+        _logger.Log($"Received <Trailers> with status '{message.Trailers.StatusCode}'");
+        var trailerMetadata = ConstructMetadata(message.Trailers.Metadata);
+        var status = new Status((StatusCode)message.Trailers.StatusCode,
+            message.Trailers.StatusDetail);
+        messageHandler.HandleTrailers(trailerMetadata, status);
+    }
+
     public async Task<bool> Read(TransportMessageHandler messageHandler)
     {
         var packet = await ReadPacketFromPipe().ConfigureAwait(false);
-        while (packet.Position < packet.Length)
+
+        // якщо є що читати, заходимо в цикл і читаєм все
+        // якщо немає що читати, робимо затримку, щоб не навантажувати процесор
+        if (packet.Position < packet.Length)
         {
-            var message = new TransportMessage();
-            message.MergeDelimitedFrom(packet);
-            switch (message.DataCase)
+            do
             {
-                case TransportMessage.DataOneofCase.RequestInit:
-                    _logger.ConnectionId = message.RequestInit.ConnectionId;
-                    _logger.Log($"Received <RequestInit> for '{message.RequestInit.MethodFullName}'");
-                    messageHandler.HandleRequestInit(message.RequestInit.MethodFullName,
-                        message.RequestInit.Deadline?.ToDateTime());
-                    break;
-                case TransportMessage.DataOneofCase.Headers:
-                    _logger.Log("Received <Headers>");
-                    var headerMetadata = ConstructMetadata(message.Headers.Metadata);
-                    messageHandler.HandleHeaders(headerMetadata);
-                    break;
-                case TransportMessage.DataOneofCase.PayloadInfo:
-                    _logger.Log($"Received <PayloadInfo> with {message.PayloadInfo.Size} bytes");
-                    var payload = new byte[message.PayloadInfo.Size];
-                    if (message.PayloadInfo.InSamePacket)
-                    {
-                        packet.Read(payload, 0, payload.Length);
-                    }
-                    else
-                    {
-                        _pipeStream.Read(payload, 0, payload.Length);
-                    }
+                var message = new TransportMessage();
+                message.MergeDelimitedFrom(packet);
+                switch (message.DataCase)
+                {
+                    case TransportMessage.DataOneofCase.RequestInit:
+                        HandleRequestInitMessage(messageHandler, message);
+                        break;
 
-                    messageHandler.HandlePayload(payload);
-                    break;
-                case TransportMessage.DataOneofCase.RequestControl:
-                    switch (message.RequestControl)
-                    {
-                        case RequestControl.Cancel:
-                            _logger.Log("Received <Cancel>");
-                            messageHandler.HandleCancel();
-                            break;
-                        case RequestControl.StreamEnd:
-                            _logger.Log("Received <StreamEnd>");
-                            messageHandler.HandleStreamEnd();
-                            break;
-                    }
+                    case TransportMessage.DataOneofCase.Headers:
+                        HandleHeadersMessage(messageHandler, message);
+                        break;
 
-                    break;
-                case TransportMessage.DataOneofCase.Trailers:
-                    _logger.Log($"Received <Trailers> with status '{message.Trailers.StatusCode}'");
-                    var trailerMetadata = ConstructMetadata(message.Trailers.Metadata);
-                    var status = new Status((StatusCode) message.Trailers.StatusCode,
-                        message.Trailers.StatusDetail);
-                    messageHandler.HandleTrailers(trailerMetadata, status);
-                    // Stop reading after receiving trailers
-                    return false;
-            }
+                    case TransportMessage.DataOneofCase.PayloadInfo:
+                        HandlePayloadInfoMessage(messageHandler, message, packet);
+                        break;
+
+                    case TransportMessage.DataOneofCase.RequestControl:
+                        HandleRequestControlMessage(messageHandler, message);
+                        break;
+
+                    case TransportMessage.DataOneofCase.Trailers:
+                        HandleTrailersMessage(messageHandler, message);
+
+                        // Stop reading after receiving trailers
+                        return false;
+                }
+            } while (packet.Position < packet.Length);
         }
+        else
+        {
+            await Task.Delay(500);
+        }
+
         return true;
     }
 

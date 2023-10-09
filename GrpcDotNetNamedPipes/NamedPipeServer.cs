@@ -32,7 +32,7 @@ public class NamedPipeServer : IDisposable
     {
     }
 
-    internal NamedPipeServer(string pipeName, NamedPipeServerOptions options, Action<string> log)
+    public NamedPipeServer(string pipeName, NamedPipeServerOptions options, Action<string> log)
     {
         _pool = new ServerStreamPool(pipeName, options, HandleConnection, InvokeError);
         _log = log;
